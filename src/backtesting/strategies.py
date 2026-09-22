@@ -9,7 +9,7 @@ from ..data.contracts import close_time_utc, open_time_utc, validate_causal_orde
 
 
 class PrimoAgentStrategy(bt.Strategy):
-    """AI-driven trading strategy using PrimoAgent signals.
+    """AI-driven trading strategy using PrimoAgent signals with trailing stop.
 
     Execution is explicitly a next-bar-open market fill: a signal derived from
     the T close forms ``feature_as_of``/``signal_generated_at`` at T's official
@@ -20,11 +20,14 @@ class PrimoAgentStrategy(bt.Strategy):
     params: tuple = (
         ("signals_df", None),
         ("printlog", False),
+        ("trailing_stop_pct", 5.0),
+        ("take_profit_pct", 15.0),
     )
 
     signals_df: Optional[pd.DataFrame]
     portfolio_values: List[float]
     order_count: int
+    highest_price: float
 
     def __init__(self) -> None:
         self.signals_df = self.p.signals_df
@@ -33,6 +36,7 @@ class PrimoAgentStrategy(bt.Strategy):
         self.execution_log: List[dict] = []
         self.trade_log: List[dict] = []
         self._order_signal_date: dict = {}
+        self.highest_price = 0.0
 
     def log(self, txt: str, dt: Any = None) -> None:
         if self.p.printlog:
@@ -41,6 +45,8 @@ class PrimoAgentStrategy(bt.Strategy):
 
     def notify_order(self, order: Any) -> None:
         if order.status == order.Completed:
+            if order.isbuy():
+                self.highest_price = self.data.close[0]
             ref = order.ref
             signal_date = self._order_signal_date.get(ref)
             exec_dt = bt.num2date(order.executed.dt)
@@ -88,6 +94,34 @@ class PrimoAgentStrategy(bt.Strategy):
         portfolio_value = self.broker.getvalue()
         self.portfolio_values.append(portfolio_value)
 
+        # --- trailing stop / take profit while in position ---
+        if self.position:
+            self.highest_price = max(self.highest_price, current_price)
+
+            # Trailing stop: sell if price drops below stop threshold from peak
+            stop_price = self.highest_price * (1.0 - self.p.trailing_stop_pct / 100.0)
+            if current_price <= stop_price:
+                self.sell(size=self.position.size)
+                self.order_count += 1
+                self.log(
+                    f"   TRAILING STOP: SOLD {self.position.size} shares @ ${current_price:.2f} "
+                    f"(peak: ${self.highest_price:.2f}, stop: ${stop_price:.2f})"
+                )
+                self.highest_price = 0.0
+                return
+
+            # Take profit: sell if price reaches profit target
+            avg_entry = self.position.price
+            if avg_entry > 0 and current_price >= avg_entry * (1.0 + self.p.take_profit_pct / 100.0):
+                self.sell(size=self.position.size)
+                self.order_count += 1
+                self.log(
+                    f"   TAKE PROFIT: SOLD {self.position.size} shares @ ${current_price:.2f} "
+                    f"(entry: ${avg_entry:.2f}, target: +{self.p.take_profit_pct}%)"
+                )
+                self.highest_price = 0.0
+                return
+
         if self.signals_df is None:
             return
 
@@ -129,6 +163,8 @@ class PrimoAgentStrategy(bt.Strategy):
                 self._order_signal_date[order.ref] = current_date
                 self.order_count += 1
                 self.log(f"   SOLD {size} shares @ ${current_price:.2f}")
+                if not self.position:
+                    self.highest_price = 0.0
             else:
                 self.log("   Less than 1 share to sell")
 
@@ -145,15 +181,22 @@ class BuyAndHoldStrategy(bt.Strategy):
         self.portfolio_values = []
         self.order_count = 0
 
+    def notify_order(self, order) -> None:
+        if order.status in [order.Rejected, order.Margin]:
+            # 跨 bar 价格跳变可能导致资金不足，自动缩小仓位重试
+            smaller = max(1, int(order.created.size * 0.9))
+            if smaller < order.created.size:
+                self.buy(size=smaller)
+                self.order_count += 1
+
     def next(self) -> None:
         portfolio_value = self.broker.getvalue()
         self.portfolio_values.append(portfolio_value)
 
         if not self.bought:
-            size = int(self.broker.getcash() / self.data.close[0])
-
+            # 预留 5% 缓冲：佣金 0.2% + 跨 bar 价格波动 ~4.8%
+            size = int(self.broker.getcash() / (self.data.close[0] * 1.05))
             if size > 0:
                 self.buy(size=size)
                 self.order_count += 1
                 self.bought = True
-
