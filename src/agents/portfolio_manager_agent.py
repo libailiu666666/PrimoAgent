@@ -311,22 +311,35 @@ def read_historical_context(symbol: str, analysis_date: Optional[str] = None) ->
             return value is not None
     
     try:
-        csv_path = os.path.join(config.csv_output_path, "daily_analysis.csv")
+        csv_path = os.path.join(config.csv_output_path, f"daily_analysis_{symbol.upper()}.csv")
         if not os.path.exists(csv_path):
             return []
-        
+
         # Read CSV file
         df = pd.read_csv(csv_path)
-        
-        # Filter for this symbol
+
+        # Filter for this symbol (per-symbol file is already scoped, but keep the
+        # guard so a mis-scoped file cannot leak another ticker's rows)
         symbol_data = df[df['symbol'] == symbol.upper()]
-        
+
         if symbol_data.empty:
             return []
-        
-        # Convert to list of dictionaries with last N entries (configurable), and calculate next_day_actual_price
-        historical_data = []
+
+        # PIT: only decisions strictly before feature_as_of (analysis_date) are
+        # visible to the current decision. Drop same-day and future signal rows.
+        symbol_data = symbol_data.copy()
+        symbol_data['date'] = pd.to_datetime(symbol_data['date'], errors='coerce')
+        if analysis_date is not None:
+            cutoff = pd.to_datetime(analysis_date, errors='coerce')
+            if pd.notna(cutoff):
+                symbol_data = symbol_data[symbol_data['date'] < cutoff]
+
+        # Newest decisions first, then keep the last N (configurable).
+        symbol_data = symbol_data.sort_values('date', ascending=False)
         symbol_data_list = symbol_data.head(config.portfolio_historical_context_count).reset_index(drop=True)
+
+        # Convert to list of dictionaries with next_day_actual_price
+        historical_data = []
         
         for i, (index, row) in enumerate(symbol_data_list.iterrows()):
             # Calculate next day actual price by looking at the previous row (CSV is sorted newest first)

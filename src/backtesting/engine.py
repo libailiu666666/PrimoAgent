@@ -24,6 +24,10 @@ def create_cerebro(
 
     cerebro.broker.setcash(effective_cash)
 
+    # Explicitly disable cheat-on-close so market orders fill at the NEXT bar's
+    # open (T close -> T+1 open), never at the T close itself (PIT §3.3).
+    cerebro.broker.set_coc(False)
+
     # Commission: percentage of trade value (e.g., 0.001 = 0.1%)
     cerebro.broker.setcommission(commission=effective_commission)
 
