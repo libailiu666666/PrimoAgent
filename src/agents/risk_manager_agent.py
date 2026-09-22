@@ -137,6 +137,12 @@ def _compute_regime_score(closes: pd.Series) -> dict:
     Returns dict with keys: regime_score, regime, rolling_dd_pct, trend_score, vol_score.
     Falls back to Neutral if insufficient data or no regime config.
     """
+    if not config.risk_regime_enabled:
+        return {
+            "regime_score": 0.0, "regime": "neutral",
+            "rolling_dd_pct": 0.0, "trend_score": 0.0, "vol_score": 0.0
+        }
+
     regime_cfg = config.risk_regime
     if not regime_cfg:
         return {
@@ -246,6 +252,28 @@ async def risk_manager_agent_node(state: AgentState) -> AgentState:
         if len(closes_full) >= 20:
             returns = _daily_returns(closes_full).tail(config.risk_var_lookback_days)
             var_value = _historical_var(returns, config.risk_var_confidence)
+
+        # --- Adaptive regime disabled: pass the PM decision through unchanged ---
+        if not config.risk_regime_enabled:
+            symbol_data["risk_adjusted"] = False
+            symbol_data["risk_metrics"] = {
+                "var_daily_pct": round(var_value * 100, 2),
+                "regime": "neutral",
+                "regime_score": 0.0,
+                "override": "none",
+                "adaptive_regime": "disabled",
+            }
+            state["portfolio_manager_results"][symbol] = symbol_data
+            state["risk_manager_results"] = {
+                "symbol": symbol,
+                "action": "validated",
+                "reason": (
+                    "Adaptive regime disabled; position size passed through unchanged"
+                ),
+                "risk_metrics": symbol_data["risk_metrics"],
+            }
+            state["current_step"] = "risk_management_complete"
+            return state
 
         # --- 1. Drawdown guard (regime-aware) ---
         force_hold = False

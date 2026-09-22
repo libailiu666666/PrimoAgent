@@ -5,6 +5,7 @@ from typing import Any, List, Optional
 import backtrader as bt
 import pandas as pd
 
+from ..config import config
 from ..data.contracts import close_time_utc, open_time_utc, validate_causal_order
 
 
@@ -22,6 +23,8 @@ class PrimoAgentStrategy(bt.Strategy):
         ("printlog", False),
         ("trailing_stop_pct", 5.0),
         ("take_profit_pct", 15.0),
+        ("enable_trailing_stop", None),
+        ("enable_take_profit", None),
     )
 
     signals_df: Optional[pd.DataFrame]
@@ -38,6 +41,18 @@ class PrimoAgentStrategy(bt.Strategy):
         self._order_signal_date: dict = {}
         self.highest_price = 0.0
 
+        # None means "defer to config"; an explicit param value wins over config.
+        self.enable_trailing_stop = (
+            self.p.enable_trailing_stop
+            if self.p.enable_trailing_stop is not None
+            else config.backtest_enable_trailing_stop
+        )
+        self.enable_take_profit = (
+            self.p.enable_take_profit
+            if self.p.enable_take_profit is not None
+            else config.backtest_enable_take_profit
+        )
+
     def log(self, txt: str, dt: Any = None) -> None:
         if self.p.printlog:
             dt = dt or self.datas[0].datetime.date(0)
@@ -46,7 +61,10 @@ class PrimoAgentStrategy(bt.Strategy):
     def notify_order(self, order: Any) -> None:
         if order.status == order.Completed:
             if order.isbuy():
-                self.highest_price = self.data.close[0]
+                # Seed the trailing-stop peak from the actual fill price (T+1
+                # open). ``self.data.close[0]`` here would read the T+1 close,
+                # leaking the same bar's close into a T+1-open fill (lookahead).
+                self.highest_price = order.executed.price
             ref = order.ref
             signal_date = self._order_signal_date.get(ref)
             exec_dt = bt.num2date(order.executed.dt)
@@ -98,29 +116,31 @@ class PrimoAgentStrategy(bt.Strategy):
         if self.position:
             self.highest_price = max(self.highest_price, current_price)
 
-            # Trailing stop: sell if price drops below stop threshold from peak
-            stop_price = self.highest_price * (1.0 - self.p.trailing_stop_pct / 100.0)
-            if current_price <= stop_price:
-                self.sell(size=self.position.size)
-                self.order_count += 1
-                self.log(
-                    f"   TRAILING STOP: SOLD {self.position.size} shares @ ${current_price:.2f} "
-                    f"(peak: ${self.highest_price:.2f}, stop: ${stop_price:.2f})"
-                )
-                self.highest_price = 0.0
-                return
+            if self.enable_trailing_stop:
+                # Trailing stop: sell if price drops below stop threshold from peak
+                stop_price = self.highest_price * (1.0 - self.p.trailing_stop_pct / 100.0)
+                if current_price <= stop_price:
+                    self.sell(size=self.position.size)
+                    self.order_count += 1
+                    self.log(
+                        f"   TRAILING STOP: SOLD {self.position.size} shares @ ${current_price:.2f} "
+                        f"(peak: ${self.highest_price:.2f}, stop: ${stop_price:.2f})"
+                    )
+                    self.highest_price = 0.0
+                    return
 
-            # Take profit: sell if price reaches profit target
-            avg_entry = self.position.price
-            if avg_entry > 0 and current_price >= avg_entry * (1.0 + self.p.take_profit_pct / 100.0):
-                self.sell(size=self.position.size)
-                self.order_count += 1
-                self.log(
-                    f"   TAKE PROFIT: SOLD {self.position.size} shares @ ${current_price:.2f} "
-                    f"(entry: ${avg_entry:.2f}, target: +{self.p.take_profit_pct}%)"
-                )
-                self.highest_price = 0.0
-                return
+            if self.enable_take_profit:
+                # Take profit: sell if price reaches profit target
+                avg_entry = self.position.price
+                if avg_entry > 0 and current_price >= avg_entry * (1.0 + self.p.take_profit_pct / 100.0):
+                    self.sell(size=self.position.size)
+                    self.order_count += 1
+                    self.log(
+                        f"   TAKE PROFIT: SOLD {self.position.size} shares @ ${current_price:.2f} "
+                        f"(entry: ${avg_entry:.2f}, target: +{self.p.take_profit_pct}%)"
+                    )
+                    self.highest_price = 0.0
+                    return
 
         if self.signals_df is None:
             return

@@ -152,6 +152,17 @@ class Config:
         risk = self._config_data.get('risk', {})
         return risk.get('regime', {})
 
+    @property
+    def risk_regime_enabled(self) -> bool:
+        """Whether the adaptive-regime overlay is enabled (default True).
+
+        When False, regime detection returns Neutral and the risk manager
+        passes the portfolio-manager decision through unchanged.
+        """
+        risk = self._config_data.get('risk', {})
+        regime = risk.get('regime', {})
+        return bool(regime.get('enabled', True))
+
     # Backtesting Configuration
     @property
     def backtest_initial_cash(self) -> float:
@@ -164,6 +175,14 @@ class Config:
     @property
     def backtest_slippage_pct(self) -> float:
         return self._config_data['backtesting']['slippage_pct']
+
+    @property
+    def backtest_enable_trailing_stop(self) -> bool:
+        return bool(self._config_data['backtesting'].get('enable_trailing_stop', True))
+
+    @property
+    def backtest_enable_take_profit(self) -> bool:
+        return bool(self._config_data['backtesting'].get('enable_take_profit', True))
 
     # Output Configuration
     @property

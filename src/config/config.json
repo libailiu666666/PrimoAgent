@@ -59,6 +59,7 @@
     "var_lookback_days": 252,
     "min_cash_reserve_pct": 10,
     "regime": {
+      "enabled": true,
       "rolling_drawdown_window": 60,
       "trend_sma_period": 20,
       "volatility_atr_period": 14,
@@ -96,7 +97,9 @@
   "backtesting": {
     "initial_cash": 100000,
     "commission_pct": 0.1,
-    "slippage_pct": 0.1
+    "slippage_pct": 0.1,
+    "enable_trailing_stop": true,
+    "enable_take_profit": true
   },
   "output": {
     "csv_path": "./output/csv",
