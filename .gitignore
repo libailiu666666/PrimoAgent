@@ -209,6 +209,15 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# PrimoAgent local datasets and caches (generated; do not commit API data)
+output/cache/
+output/data/
+output/logs/
+output/reports/
+output/experiments/
+output/yfcache/
+*.log
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

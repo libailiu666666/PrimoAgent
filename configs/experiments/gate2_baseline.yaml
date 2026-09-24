@@ -1,0 +1,101 @@
+# Gate 2 — Walk-forward benchmark baseline configuration (frozen).
+#
+# This is the canonical configuration for the deterministic baselines that
+# establish the evaluation framework for all later algorithm experiments.
+# It is intentionally minimal: every legacy risk overlay is switched OFF so
+# the baselines measure the raw signal, not the overlay.
+
+experiment:
+  name: gate2_baseline
+  version: "1.0.0"
+  random_seed: 42
+  description: "Deterministic walk-forward baselines; legacy risk overlays disabled."
+
+universe:
+  # 30-stock universe (frozen). Adjusted OHLC from the Tiingo parquet cache.
+  price_source: tiingo
+  tickers:
+    - AAPL
+    - AMD
+    - AMZN
+    - AVGO
+    - BAC
+    - BA
+    - CAT
+    - COST
+    - CVX
+    - GOOGL
+    - GS
+    - HD
+    - JNJ
+    - JPM
+    - KO
+    - LLY
+    - MCD
+    - META
+    - MSFT
+    - NEE
+    - NFLX
+    - NVDA
+    - ORCL
+    - PFE
+    - PG
+    - TSLA
+    - UNH
+    - V
+    - WMT
+    - XOM
+
+benchmark:
+  # Market benchmark (S&P 500 ETF) lives in the Yahoo daily parquet.
+  spy_ticker: SPY
+  spy_source: yahoo
+
+walk_forward:
+  scheme: annual_expanding          # expanding window, never shuffled
+  start_year: 2017
+  train_years: 4
+  calibration_years: 1
+  test_years: 1
+
+execution:
+  # Frozen execution protocol: T close -> signal after close -> T+1 open.
+  protocol: "T close -> signal after close -> T+1 open"
+  signal_time: close
+  execution_time: next_open
+
+costs:
+  initial_capital: 100000
+  commission_bps: 0                 # per side, basis points of notional
+  slippage_bps: 0                   # per side, basis points of price
+  cash_reserve_pct: 0               # fraction of capital never deployed
+
+# Pre-Gate2 legacy overlays. MUST all be false for the benchmark; the runner
+# reads these three final values, prints them, and records them in the manifest.
+legacy_risk:
+  risk:
+    regime:
+      enabled: false
+  backtesting:
+    enable_trailing_stop: false
+    enable_take_profit: false
+
+strategies:
+  - buy_and_hold
+  - spy_benchmark
+  - equal_weight
+  - technical_only
+  - fundamental_only
+
+strategy_params:
+  technical_only:
+    sma_fast: 20
+    sma_slow: 50
+  fundamental_only:
+    rebalance: monthly
+    top_k: 10
+    net_income_concept: NetIncomeLoss
+    assets_concept: Assets
+
+output:
+  root: output/experiments
