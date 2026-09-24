@@ -63,6 +63,25 @@ def _parse_acceptance_utc(raw) -> pd.Timestamp:
     return pd.Timestamp(s).tz_localize("America/New_York").tz_convert("UTC")
 
 
+# Per-symbol read cache for ``get_fundamentals``. Stores the parsed facts frame
+# (with ``known_at`` / ``is_date_only`` precomputed) keyed by symbol; the
+# ``as_of`` disclosure-time filter is ALWAYS applied on top of the cached frame,
+# so the cache never bypasses the PIT cut. The signature (resolved path +
+# mtime_ns + size) invalidates the entry when the underlying parquet changes.
+_FUNDAMENTALS_CACHE: dict[str, tuple[str, pd.DataFrame]] = {}
+
+
+def _fundamentals_signature(facts_path, subs_path) -> str:
+    parts = []
+    for p in (facts_path, subs_path):
+        try:
+            st = p.stat()
+            parts.append(f"{p.resolve()}:{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            parts.append(f"{p.resolve()}:missing")
+    return "|".join(parts)
+
+
 class HistoricalDataStore:
     """PIT-safe read-only store over local ``output/`` data."""
 
@@ -195,40 +214,46 @@ class HistoricalDataStore:
         if not facts_path.exists():
             return pd.DataFrame()
 
-        facts = pd.read_parquet(facts_path)
-        if facts.empty:
-            return facts
+        sig = _fundamentals_signature(facts_path, subs_path)
+        cached = _FUNDAMENTALS_CACHE.get(symbol)
+        if cached is not None and cached[0] == sig:
+            facts = cached[1]
+        else:
+            facts = pd.read_parquet(facts_path)
+            if facts.empty:
+                return facts
 
-        acceptance_map: dict[str, pd.Timestamp] = {}
-        if subs_path.exists():
-            subs = pd.read_parquet(subs_path)
-            for _, r in subs.iterrows():
-                acceptance_map[str(r["accession_no"])] = _parse_acceptance_utc(
-                    r["acceptance_datetime"]
-                )
+            acceptance_map: dict[str, pd.Timestamp] = {}
+            if subs_path.exists():
+                subs = pd.read_parquet(subs_path)
+                for _, r in subs.iterrows():
+                    acceptance_map[str(r["accession_no"])] = _parse_acceptance_utc(
+                        r["acceptance_datetime"]
+                    )
 
-        known_at = []
-        date_only = []
-        for acc, filed in zip(facts["accn"], facts["filed"]):
-            precise = acceptance_map.get(str(acc))
-            if precise is not None:
-                known_at.append(precise)
-                date_only.append(False)
-                continue
-            ft = pd.to_datetime(filed, errors="coerce")
-            if pd.isna(ft):
-                known_at.append(pd.NaT)
-            else:
-                known_at.append(
-                    ft.tz_localize("UTC")
-                    + pd.Timedelta(days=1)
-                    - pd.Timedelta(microseconds=1)
-                )
-            date_only.append(True)
+            known_at = []
+            date_only = []
+            for acc, filed in zip(facts["accn"], facts["filed"]):
+                precise = acceptance_map.get(str(acc))
+                if precise is not None:
+                    known_at.append(precise)
+                    date_only.append(False)
+                    continue
+                ft = pd.to_datetime(filed, errors="coerce")
+                if pd.isna(ft):
+                    known_at.append(pd.NaT)
+                else:
+                    known_at.append(
+                        ft.tz_localize("UTC")
+                        + pd.Timedelta(days=1)
+                        - pd.Timedelta(microseconds=1)
+                    )
+                date_only.append(True)
 
-        facts = facts.copy()
-        facts["known_at"] = pd.to_datetime(known_at, utc=True)
-        facts["is_date_only"] = date_only
+            facts = facts.copy()
+            facts["known_at"] = pd.to_datetime(known_at, utc=True)
+            facts["is_date_only"] = date_only
+            _FUNDAMENTALS_CACHE[symbol] = (sig, facts)
 
         m = facts["known_at"] <= a
         # conservative same-day exclusion for date-only filed == feature_as_of.date()
